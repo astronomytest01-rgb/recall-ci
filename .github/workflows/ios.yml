@@ -1,0 +1,70 @@
+name: iOS build, tests, screenshots
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  ios:
+    runs-on: macos-15
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          brew install xcodegen
+          xcodebuild -version
+
+      - name: Validate packs
+        run: python3 tools/validate_packs.py Recall/Packs/*.json
+
+      - name: Generate project
+        run: xcodegen generate
+
+      - name: Pick simulator
+        id: sim
+        run: |
+          UDID=$(xcrun simctl list devices available -j | python3 -c "
+          import json,sys
+          d=json.load(sys.stdin)['devices']
+          c=[(rt,x) for rt,xs in d.items() if 'iOS' in rt for x in xs if x['name'].startswith('iPhone') and 'Pro' in x['name'] and 'Max' not in x['name']]
+          c=c or [(rt,x) for rt,xs in d.items() if 'iOS' in rt for x in xs if x['name'].startswith('iPhone')]
+          c.sort(key=lambda t:t[0]); print(c[-1][1]['udid'])")
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+          xcrun simctl list devices | grep "$UDID"
+
+      - name: Build for device (unsigned)
+        run: |
+          xcodebuild build -project Recall.xcodeproj -scheme Recall -configuration Release \
+            -sdk iphoneos -destination 'generic/platform=iOS' \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO | tail -20
+          test ${PIPESTATUS[0]} -eq 0
+
+      - name: Unit and UI tests on simulator
+        run: |
+          set -o pipefail
+          xcodebuild test -project Recall.xcodeproj -scheme Recall \
+            -destination "id=${{ steps.sim.outputs.udid }}" \
+            -resultBundlePath build/Results.xcresult \
+            CODE_SIGNING_ALLOWED=NO 2>&1 | grep -E "error:|warning: .*Recall/|Test Case|Executed|\*\* TEST" | tail -150
+
+      - name: Export screenshots
+        if: always()
+        run: |
+          mkdir -p build/shots
+          xcrun xcresulttool export attachments --path build/Results.xcresult --output-path build/shots || true
+          ls build/shots | head -50
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: screenshots
+          path: build/shots
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: xcresult
+          path: build/Results.xcresult

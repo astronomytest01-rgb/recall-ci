@@ -1,0 +1,2 @@
+/* Recall is Russian-first; this file makes ru the app localization so system UI (Back, Cancel) follows it. */
+"app.name" = "Recall";
